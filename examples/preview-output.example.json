@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "mode": "preview",
+  "scanned": 100,
+  "projectCount": 8,
+  "plannedCount": 12,
+  "movedCount": 0,
+  "failedCount": 0,
+  "skippedCount": 88,
+  "byProject": {
+    "工作": 3,
+    "学习": 2,
+    "写作": 4,
+    "事务": 3
+  },
+  "planned": [
+    { "title": "季度规划讨论", "project": "工作" },
+    { "title": "写作大纲优化", "project": "写作" }
+  ],
+  "skipped": [
+    { "title": "New chat", "reason": "no-confident-project" },
+    { "title": "已在项目里的对话", "reason": "already-in-project" }
+  ]
+}

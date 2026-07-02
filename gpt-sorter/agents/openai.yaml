@@ -1,0 +1,4 @@
+interface:
+  display_name: "GPT Sorter"
+  short_description: "Sort ChatGPT chats into projects"
+  default_prompt: "Use $gpt-sorter to preview and batch move my ChatGPT conversations into existing projects."
