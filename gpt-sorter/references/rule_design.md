@@ -8,6 +8,9 @@
 - Use exact title overrides for ambiguous but user-confirmed cases.
 - Keep broad regex rules conservative. Over-broad rules are worse than skipped items.
 - Treat `New chat`, very short unclear titles, and multi-topic titles as skipped unless the user confirms.
+- Exact title mappings have the highest priority and can override semantic-empty title protection.
+- Non-exact matches must collect every matching rule. If more than one rule matches, skip as `ambiguous-multiple-rules` and show candidate projects.
+- Do not use "first match wins"; it hides ambiguous rules and can move conversations into the wrong project.
 
 ## Recommended Rule Categories
 
@@ -43,3 +46,4 @@ Show a compact preview:
 ```
 
 Then wait for a clear confirmation such as `确认` or `执行`.
+For CLI execution, convert that confirmation into `--confirm-count <plannedCount>` or `--confirm-plan`.

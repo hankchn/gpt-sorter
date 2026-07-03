@@ -1,0 +1,16 @@
+{
+  "name": "gpt-sorter",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "gpt-sorter": "gpt-sorter/scripts/gpt_sorter.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "smoke": "node gpt-sorter/scripts/gpt_sorter.mjs --help",
+    "test": "node --test"
+  }
+}

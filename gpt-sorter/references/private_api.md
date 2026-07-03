@@ -20,6 +20,8 @@ List owned projects:
 GET /backend-api/gizmos/snorlax/sidebar?owned_only=true&conversations_per_gizmo=0&limit=50
 ```
 
+The endpoint accepts `limit=50`. The script attempts cursor or offset pagination when the response exposes it or when an `offset` query keeps returning new project IDs. If the endpoint ignores pagination or rejects a later page, the report marks `projectPagination.truncated: true`; treat `projectCount` as possibly truncated and re-check before executing broad plans.
+
 List conversations:
 
 ```text
@@ -44,4 +46,6 @@ Project IDs are the `gizmo.id` values from the project sidebar response. Existin
 - `401 Unauthorized - Access token is missing`: the page is not logged in or the token was not fetched inside page context.
 - `422` on project sidebar: the `limit` query must be no larger than `50`.
 - CDP page list is empty: Chrome may have closed the debug page; reopen a ChatGPT page through the endpoint or ask the user to log in again.
+- `--page-id` should resolve targets through `/json/list` first and use the returned `webSocketDebuggerUrl`. Only fall back to constructing a page WebSocket URL from the user-provided `--cdp` host when the target is not listed.
 - ChatGPT may rate limit rapid conversation reads/writes. Use a delay between `PATCH` requests.
+- If a private API fails during preview or execute, stop and run a fresh preview. Do not blindly retry write operations.
