@@ -1,4 +1,4 @@
 interface:
   display_name: "GPT Sorter"
-  short_description: "Preview and safely sort ChatGPT chats into projects"
-  default_prompt: "Use $gpt-sorter to preview my ChatGPT conversations, suggest safe rules, and move confirmed matches into existing projects."
+  short_description: "Preview and safely sort ChatGPT conversations"
+  default_prompt: "Use $gpt-sorter to save a preview, review its fingerprint, and safely move confirmed ChatGPT conversations into existing Projects."

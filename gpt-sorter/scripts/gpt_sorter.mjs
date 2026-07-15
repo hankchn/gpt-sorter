@@ -3,11 +3,18 @@ import fs from "node:fs";
 import path from "node:path";
 
 import {
-  DEFAULT_CONFIG,
+  attachPreviewManifest,
+  attachRollbackManifest,
   buildPlan,
+  buildWritePreflight,
   formatHumanReport,
+  mergeMoveResults,
+  redactTitles,
+  runSequentialMoves,
   suggestRules,
-  validateConfig
+  validateConfig,
+  validateExecuteReport,
+  validatePreviewReport
 } from "./core.mjs";
 
 const DEFAULT_CDP = "http://127.0.0.1:9777";
@@ -20,9 +27,9 @@ function usage(exitCode = 0) {
   const text = `usage:
   gpt-sorter --help
   gpt-sorter preview [options]
-  gpt-sorter execute [options] --confirm-count <N>|--confirm-plan
+  gpt-sorter execute --plan <preview-report.json> [options] --confirm-plan <fingerprint>|--confirm-count <N>
   gpt-sorter suggest-rules [options] --out <file>
-  gpt-sorter rollback --plan <execute-report.json> --confirm-count <N>|--confirm-plan
+  gpt-sorter rollback --plan <execute-report.json> --confirm-plan <fingerprint>|--confirm-count <N>
 
 options:
   --cdp <url>               Chrome DevTools endpoint, default ${DEFAULT_CDP}
@@ -33,14 +40,16 @@ options:
   --delay-ms <N>            Delay between write requests, default ${DEFAULT_DELAY_MS}
   --timeout-ms <N>          CDP WebSocket RPC timeout, default ${DEFAULT_TIMEOUT_MS}
   --confirm-count <N>       Execute only if plannedCount exactly equals N
-  --confirm-plan            Execute or rollback the currently generated plan
+  --confirm-plan <sha256>   Confirm the exact saved preview or rollback fingerprint
   --out <file>              Write JSON report or suggested rules
   --json                    Print full JSON instead of a human summary
+  --redact-titles           Remove conversation titles from files written with --out
+  --include-title-samples   Persist title samples in suggest-rules output
   --max-preview-items <N>   Human summary sample size, default 20
   --include-archived        Include archived conversations in scanning
   --include-starred         Include starred conversations in scanning
   --include-in-project      Allow conversations already in a project to be replanned
-  --plan <file>             Execute report to use for rollback
+  --plan <file>             Saved preview for execute, or execute report for rollback
 `;
   const stream = exitCode === 0 ? process.stdout : process.stderr;
   stream.write(text);
@@ -65,14 +74,16 @@ function parseArgs(argv) {
     includeArchived: false,
     includeStarred: false,
     includeInProject: false,
-    confirmPlan: false,
+    confirmPlan: null,
     confirmCount: null,
     open: false,
     pageId: null,
     rulesPath: null,
     outFile: null,
     planFile: null,
-    json: false
+    json: false,
+    redactTitles: false,
+    includeTitleSamples: false
   };
 
   const valueOptions = new Set([
@@ -83,6 +94,7 @@ function parseArgs(argv) {
     "--delay-ms",
     "--timeout-ms",
     "--confirm-count",
+    "--confirm-plan",
     "--out",
     "--max-preview-items",
     "--plan"
@@ -90,7 +102,8 @@ function parseArgs(argv) {
   const flagOptions = new Set([
     "--open",
     "--json",
-    "--confirm-plan",
+    "--redact-titles",
+    "--include-title-samples",
     "--include-archived",
     "--include-starred",
     "--include-in-project"
@@ -109,6 +122,7 @@ function parseArgs(argv) {
       if (arg === "--delay-ms") options.delayMs = toNonNegativeNumber(value, "--delay-ms");
       if (arg === "--timeout-ms") options.timeoutMs = toPositiveNumber(value, "--timeout-ms");
       if (arg === "--confirm-count") options.confirmCount = toNonNegativeInteger(value, "--confirm-count");
+      if (arg === "--confirm-plan") options.confirmPlan = value.toLocaleLowerCase();
       if (arg === "--out") options.outFile = value;
       if (arg === "--max-preview-items") options.maxPreviewItems = toNonNegativeInteger(value, "--max-preview-items");
       if (arg === "--plan") options.planFile = value;
@@ -118,7 +132,8 @@ function parseArgs(argv) {
     if (flagOptions.has(arg)) {
       if (arg === "--open") options.open = true;
       if (arg === "--json") options.json = true;
-      if (arg === "--confirm-plan") options.confirmPlan = true;
+      if (arg === "--redact-titles") options.redactTitles = true;
+      if (arg === "--include-title-samples") options.includeTitleSamples = true;
       if (arg === "--include-archived") options.includeArchived = true;
       if (arg === "--include-starred") options.includeStarred = true;
       if (arg === "--include-in-project") options.includeInProject = true;
@@ -172,12 +187,12 @@ function readJsonFile(filePath, label) {
 }
 
 function loadConfig(rulesPath) {
-  if (!rulesPath) return validateConfig(DEFAULT_CONFIG);
+  if (!rulesPath) return { ok: true, config: null, configErrors: [], source: "auto-project-names" };
   const rawConfig = readJsonFile(rulesPath, "rules file");
   if (rawConfig.__readError) {
     return { ok: false, config: null, configErrors: [rawConfig.__readError] };
   }
-  return validateConfig(rawConfig);
+  return { ...validateConfig(rawConfig), source: "file" };
 }
 
 function writeJson(filePath, payload) {
@@ -189,7 +204,7 @@ function outputReport(report, options) {
   const finalReport = { ...report };
   if (options.outFile) {
     finalReport.outputFile = path.resolve(options.outFile);
-    writeJson(options.outFile, finalReport);
+    writeJson(options.outFile, options.redactTitles ? redactTitles(finalReport) : finalReport);
   }
 
   if (options.json) {
@@ -197,6 +212,29 @@ function outputReport(report, options) {
   } else {
     process.stdout.write(`${formatHumanReport(finalReport, { maxPreviewItems: options.maxPreviewItems })}\n`);
   }
+}
+
+function prepareOutputDestination(options) {
+  if (!options.outFile) return null;
+  const outputPath = path.resolve(options.outFile);
+  if (options.planFile && outputPath === path.resolve(options.planFile)) {
+    return "--out must not overwrite the source --plan file.";
+  }
+  try {
+    const directory = path.dirname(outputPath);
+    fs.mkdirSync(directory, { recursive: true });
+    fs.accessSync(directory, fs.constants.W_OK);
+    if (fs.existsSync(outputPath)) fs.accessSync(outputPath, fs.constants.W_OK);
+    return null;
+  } catch (error) {
+    return `Output path is not writable: ${error.message}`;
+  }
+}
+
+function persistCheckpoint(report, options) {
+  const finalReport = { ...report, outputFile: path.resolve(options.outFile) };
+  writeJson(options.outFile, options.redactTitles ? redactTitles(finalReport) : finalReport);
+  return finalReport;
 }
 
 async function fetchJson(url, { method = "GET", timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
@@ -565,9 +603,15 @@ function applyMovesExpression(moves, delayMs) {
 `;
 }
 
-function requireWriteConfirmation(options, action) {
-  if (options.confirmPlan || options.confirmCount !== null) return null;
-  return `${action} requires --confirm-count <N> or --confirm-plan. Run preview first, then confirm the exact planned count.`;
+function requireWriteConfirmation(options, action, fingerprint) {
+  if (options.confirmPlan !== null) {
+    if (options.confirmPlan !== fingerprint) {
+      return `--confirm-plan mismatch: expected ${fingerprint}, received ${options.confirmPlan}.`;
+    }
+    return null;
+  }
+  if (options.confirmCount !== null) return null;
+  return `${action} requires --confirm-plan <fingerprint> or --confirm-count <N>. Review the saved plan first.`;
 }
 
 function confirmCountMismatch(options, count, label = "plannedCount") {
@@ -586,22 +630,29 @@ async function buildSnapshot(options) {
   return snapshot;
 }
 
-async function runPreviewOrExecute(options) {
-  if (options.mode === "execute") {
-    const confirmationError = requireWriteConfirmation(options, "execute");
-    if (confirmationError) {
-      outputReport({ ok: false, mode: options.mode, error: confirmationError }, options);
-      return 1;
-    }
-  }
-
-  const configResult = loadConfig(options.rulesPath);
+async function runPreview(options) {
+  let configResult = loadConfig(options.rulesPath);
   if (!configResult.ok) {
     outputReport({ ok: false, mode: options.mode, configErrors: configResult.configErrors }, options);
     return 1;
   }
 
   const snapshot = await buildSnapshot(options);
+  const configWarnings = [];
+  let ruleCoverage = null;
+  if (!configResult.config) {
+    const draft = suggestRules({
+      projects: snapshot.projects,
+      conversations: snapshot.conversations,
+      maxTitles: options.scanLimit ?? snapshot.conversations.length
+    });
+    configResult = { ...validateConfig({ rules: draft.rules, exact: draft.exact }), source: "auto-project-names" };
+    ruleCoverage = draft._meta.coverage;
+    configWarnings.push(
+      "No --rules file was provided. Preview used conservative project-name matches; review skipped coverage and create a rule file before broad execution."
+    );
+  }
+
   const plan = buildPlan({
     conversations: snapshot.conversations,
     projects: snapshot.projects,
@@ -610,70 +661,170 @@ async function runPreviewOrExecute(options) {
     projectPagination: snapshot.projectPagination
   });
 
-  const baseReport = {
+  const baseReport = attachPreviewManifest({
     ok: true,
-    mode: options.mode,
+    mode: "preview",
     generatedAt: new Date().toISOString(),
     scan: options.scanArg,
+    ruleSource: configResult.source,
+    ruleCoverage,
+    configWarnings,
     filters: {
       includeArchived: options.includeArchived,
       includeStarred: options.includeStarred,
       includeInProject: options.includeInProject
     },
     ...plan
-  };
+  });
+  outputReport(baseReport, options);
+  return 0;
+}
 
-  if (options.mode === "preview") {
-    outputReport(baseReport, options);
-    return 0;
+function readPlanFile(options, label) {
+  if (!options.planFile) return { error: `${options.mode} requires --plan <${label}>.` };
+  const report = readJsonFile(options.planFile, label);
+  if (report.__readError) return { error: report.__readError };
+  return { report };
+}
+
+async function buildFullPreflight(options, manifest) {
+  const snapshot = await buildSnapshot({
+    ...options,
+    scanArg: "all",
+    scanLimit: null,
+    includeArchived: true,
+    includeStarred: true
+  });
+  return { snapshot, ...buildWritePreflight(manifest, snapshot) };
+}
+
+async function applyMovesSequentially(options, moves, onProgress = async () => {}) {
+  try {
+    return await withChatGPTPage(options, async (send) =>
+      await runSequentialMoves({
+        moves,
+        delayMs: options.delayMs,
+        onProgress,
+        executeOne: async (move) => {
+          const execution = await evaluate(
+            send,
+            applyMovesExpression([move], 0),
+            Math.max(options.timeoutMs, 10_000)
+          );
+          if (!execution.ok) throw new Error(execution.error || "Write failed.");
+          return mergeMoveResults([move], execution.results)[0];
+        }
+      })
+    );
+  } catch (error) {
+    return {
+      results: [],
+      error: error.message,
+      uncertainMove: moves[0] || null
+    };
   }
+}
 
-  const mismatch = confirmCountMismatch(options, plan.plannedCount);
-  if (mismatch) {
-    outputReport({ ...baseReport, ok: false, error: mismatch }, options);
+function buildExecuteReport(baseReport, moves, moveResults, { error = null, uncertainMove = null } = {}) {
+  const failedCount = moveResults.filter((item) => item.status === "failed").length;
+  const complete = !error && failedCount === 0 && moveResults.length === moves.length;
+  let report = attachRollbackManifest({
+    ...baseReport,
+    ok: complete,
+    status: complete ? "complete" : "incomplete",
+    error: complete ? null : error || "Execution stopped before every move completed.",
+    movedCount: moveResults.filter((item) => item.status === "moved").length,
+    failedCount,
+    pendingCount: moves.length - moveResults.length,
+    uncertainMove: uncertainMove
+      ? { id: uncertainMove.id, title: uncertainMove.title, targetGizmoId: uncertainMove.targetGizmoId }
+      : null,
+    moves: moveResults
+  });
+  report.rollback = {
+    supported: report.movedCount > 0,
+    fingerprint: report.rollbackFingerprint,
+    command: `gpt-sorter rollback --plan <execute-report.json> --confirm-plan ${report.rollbackFingerprint}`
+  };
+  return report;
+}
+
+async function runExecute(options) {
+  if (!options.outFile) {
+    outputReport({ ok: false, mode: options.mode, error: "execute requires --out <execute-report.json> for audit and rollback." }, options);
     return 1;
   }
 
-  const moves = plan.planned.map((item) => ({
-    ...item,
-    targetGizmoId: item.projectId
-  }));
-  const execution = await withChatGPTPage(options, async (send) =>
-    await evaluate(send, applyMovesExpression(moves, options.delayMs), Math.max(options.timeoutMs, moves.length * (options.delayMs + 10_000)))
-  );
-  if (!execution.ok) throw new Error(execution.error || "Execution failed.");
+  const outputError = prepareOutputDestination(options);
+  if (outputError) {
+    outputReport({ ok: false, mode: options.mode, error: outputError }, { ...options, outFile: null });
+    return 1;
+  }
 
-  const moveResults = mergeMoveResults(moves, execution.results);
-  const executeReport = {
-    ...baseReport,
-    movedCount: moveResults.filter((item) => item.status === "moved").length,
-    failedCount: moveResults.filter((item) => item.status === "failed").length,
-    moves: moveResults,
-    rollback: {
-      supported: true,
-      command: "gpt-sorter rollback --plan <execute-report.json> --confirm-count <movedCount>"
-    }
+  const loaded = readPlanFile(options, "preview-report.json");
+  if (loaded.error) {
+    outputReport({ ok: false, mode: options.mode, error: loaded.error }, options);
+    return 1;
+  }
+  const validation = validatePreviewReport(loaded.report);
+  if (!validation.ok) {
+    outputReport({ ok: false, mode: options.mode, error: validation.errors.join(" "), planErrors: validation.errors }, options);
+    return 1;
+  }
+
+  const confirmationError = requireWriteConfirmation(options, "execute", validation.planFingerprint);
+  if (confirmationError) {
+    outputReport({ ok: false, mode: options.mode, error: confirmationError }, options);
+    return 1;
+  }
+
+  const mismatch = confirmCountMismatch(options, validation.manifest.plannedCount);
+  if (mismatch) {
+    outputReport({ ok: false, mode: options.mode, error: mismatch }, options);
+    return 1;
+  }
+
+  const preflight = await buildFullPreflight(options, validation.manifest);
+  if (preflight.errors.length) {
+    outputReport(
+      {
+        ok: false,
+        mode: options.mode,
+        error: `Execution stopped: ${preflight.errors.length} planned item(s) changed after preview. Run a fresh preview.`,
+        planFingerprint: validation.planFingerprint,
+        preflightErrors: preflight.errors
+      },
+      options
+    );
+    return 1;
+  }
+
+  const moves = preflight.eligible;
+  const baseReport = {
+    mode: "execute",
+    generatedAt: new Date().toISOString(),
+    sourcePlan: path.resolve(options.planFile),
+    planFingerprint: validation.planFingerprint,
+    scanned: preflight.snapshot.conversations.length,
+    projectCount: preflight.snapshot.projects.length,
+    plannedCount: moves.length,
+    skippedCount: 0,
+    byProject: moves.reduce((counts, item) => {
+      const key = item.project || "(no project)";
+      counts[key] = (counts[key] || 0) + 1;
+      return counts;
+    }, {}),
+    planned: moves,
+    skipped: []
   };
-  outputReport(executeReport, options);
-  return executeReport.failedCount ? 1 : 0;
-}
 
-function mergeMoveResults(moves, results) {
-  const resultById = new Map((results || []).map((item) => [item.id, item]));
-  return moves.map((move) => {
-    const result = resultById.get(move.id);
-    return {
-      id: move.id,
-      title: move.title,
-      previousGizmoId: move.previousGizmoId,
-      project: move.project,
-      projectId: move.projectId,
-      targetGizmoId: move.targetGizmoId,
-      status: result?.status || "failed",
-      httpStatus: result?.httpStatus ?? null,
-      error: result?.error ?? "No result returned from page context."
-    };
+  persistCheckpoint(buildExecuteReport(baseReport, moves, [], { error: "Execution has not started." }), options);
+  const execution = await applyMovesSequentially(options, moves, async (results) => {
+    persistCheckpoint(buildExecuteReport(baseReport, moves, results, { error: "Execution is still in progress." }), options);
   });
+  const executeReport = buildExecuteReport(baseReport, moves, execution.results, execution);
+  outputReport(executeReport, options);
+  return executeReport.ok ? 0 : 1;
 }
 
 async function runSuggestRules(options) {
@@ -685,84 +836,95 @@ async function runSuggestRules(options) {
   const draft = suggestRules({
     projects: snapshot.projects,
     conversations: snapshot.conversations,
-    maxTitles: options.scanLimit ?? snapshot.conversations.length
+    maxTitles: options.scanLimit ?? snapshot.conversations.length,
+    includeTitleSamples: options.includeTitleSamples
   });
-  writeJson(options.outFile, draft);
+  writeJson(options.outFile, options.redactTitles ? redactTitles(draft) : draft);
 
   if (options.json) {
     process.stdout.write(`${JSON.stringify({ ok: true, mode: options.mode, outFile: path.resolve(options.outFile), ...draft._meta }, null, 2)}\n`);
   } else {
     process.stdout.write(`Suggested rules written: ${path.resolve(options.outFile)}\n`);
+    if (draft._meta.coverage) {
+      process.stdout.write(
+        `Coverage: planned=${draft._meta.coverage.planned}, unmatched=${draft._meta.coverage.unmatched}, ambiguous=${draft._meta.coverage.ambiguous}\n`
+      );
+    }
+    process.stdout.write(`Title samples persisted: ${draft._meta.titleSamplesIncluded ? "yes" : "no"}\n`);
     process.stdout.write("Review and edit the draft, then run preview with --rules before any execute.\n");
   }
   return 0;
 }
 
 async function runRollback(options) {
-  if (!options.planFile) {
-    outputReport({ ok: false, mode: options.mode, error: "rollback requires --plan <execute-report.json>." }, options);
+  const loaded = readPlanFile(options, "execute-report.json");
+  if (loaded.error) {
+    outputReport({ ok: false, mode: options.mode, error: loaded.error }, options);
+    return 1;
+  }
+  const outputError = prepareOutputDestination(options);
+  if (outputError) {
+    outputReport({ ok: false, mode: options.mode, error: outputError }, { ...options, outFile: null });
+    return 1;
+  }
+  const validation = validateExecuteReport(loaded.report);
+  if (!validation.ok) {
+    outputReport({ ok: false, mode: options.mode, error: validation.errors.join(" "), planErrors: validation.errors }, options);
     return 1;
   }
 
-  const confirmationError = requireWriteConfirmation(options, "rollback");
+  const confirmationError = requireWriteConfirmation(options, "rollback", validation.rollbackFingerprint);
   if (confirmationError) {
     outputReport({ ok: false, mode: options.mode, error: confirmationError }, options);
     return 1;
   }
 
-  const plan = readJsonFile(options.planFile, "execute report");
-  if (plan.__readError) {
-    outputReport({ ok: false, mode: options.mode, error: plan.__readError }, options);
-    return 1;
-  }
-
-  const movedItems = (plan.moves || [])
-    .filter((item) => item.status === "moved" && item.id && Object.prototype.hasOwnProperty.call(item, "previousGizmoId"))
-    .map((item) => ({
-      id: item.id,
-      title: item.title,
-      previousGizmoId: item.previousGizmoId,
-      targetGizmoId: item.previousGizmoId,
-      project: item.project,
-      projectId: item.projectId
-    }));
-
-  const mismatch = confirmCountMismatch(options, movedItems.length, "rollback item count");
+  const mismatch = confirmCountMismatch(options, validation.manifest.plannedCount, "rollback item count");
   if (mismatch) {
-    outputReport({ ok: false, mode: options.mode, error: mismatch, rollbackCount: movedItems.length }, options);
+    outputReport({ ok: false, mode: options.mode, error: mismatch, rollbackCount: validation.manifest.plannedCount }, options);
     return 1;
   }
 
-  const execution = await withChatGPTPage(options, async (send) =>
-    await evaluate(send, applyMovesExpression(movedItems, options.delayMs), Math.max(options.timeoutMs, movedItems.length * (options.delayMs + 10_000)))
-  );
-  if (!execution.ok) throw new Error(execution.error || "Rollback failed.");
+  const preflight = await buildFullPreflight(options, validation.manifest);
+  const execution = preflight.eligible.length
+    ? await applyMovesSequentially(options, preflight.eligible)
+    : { results: [], error: null, uncertainMove: null };
 
-  const rollbackResults = mergeMoveResults(movedItems, execution.results).map((item) => ({
+  const rollbackResults = execution.results.map((item) => ({
     ...item,
     status: item.status === "moved" ? "restored" : item.status
   }));
+  const skipped = preflight.errors.map((item) => ({ ...item, status: "skipped" }));
   outputReport(
     {
-      ok: true,
+      ok: !execution.error && !rollbackResults.some((item) => item.status === "failed") && skipped.length === 0,
       mode: options.mode,
+      error: execution.error,
       generatedAt: new Date().toISOString(),
       sourcePlan: path.resolve(options.planFile),
-      rollbackCount: movedItems.length,
+      rollbackFingerprint: validation.rollbackFingerprint,
+      rollbackCount: validation.manifest.plannedCount,
+      eligibleCount: preflight.eligible.length,
       restoredCount: rollbackResults.filter((item) => item.status === "restored").length,
       failedCount: rollbackResults.filter((item) => item.status === "failed").length,
+      skippedCount: skipped.length,
+      uncertainMove: execution.uncertainMove
+        ? { id: execution.uncertainMove.id, title: execution.uncertainMove.title, targetGizmoId: execution.uncertainMove.targetGizmoId }
+        : null,
+      skipped,
       rollback: rollbackResults
     },
     options
   );
-  return rollbackResults.some((item) => item.status === "failed") ? 1 : 0;
+  return execution.error || rollbackResults.some((item) => item.status === "failed") || skipped.length ? 1 : 0;
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) usage(0);
 
-  if (options.mode === "preview" || options.mode === "execute") return await runPreviewOrExecute(options);
+  if (options.mode === "preview") return await runPreview(options);
+  if (options.mode === "execute") return await runExecute(options);
   if (options.mode === "suggest-rules") return await runSuggestRules(options);
   if (options.mode === "rollback") return await runRollback(options);
   usage(2);

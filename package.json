@@ -1,6 +1,6 @@
 {
   "name": "gpt-sorter",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "private": true,
   "bin": {
@@ -11,6 +11,8 @@
   },
   "scripts": {
     "smoke": "node gpt-sorter/scripts/gpt_sorter.mjs --help",
-    "test": "node --test"
+    "check": "node --check gpt-sorter/scripts/gpt_sorter.mjs && node --check gpt-sorter/scripts/core.mjs",
+    "test": "node --test",
+    "test:coverage": "node --test --experimental-test-coverage"
   }
 }

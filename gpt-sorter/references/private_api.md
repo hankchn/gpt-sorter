@@ -30,6 +30,8 @@ GET /backend-api/conversations?offset=0&limit=100&order=updated&is_archived=fals
 
 The list endpoint is offset-paginated. Continue until the returned item count is smaller than the requested limit.
 
+Before execute or rollback, the script scans all conversation-list metadata without archived/starred filters so every saved plan item can be checked even if its list position or flags changed. It still does not request conversation bodies.
+
 Move a conversation into a project:
 
 ```text
@@ -41,6 +43,14 @@ Content-Type: application/json
 
 Project IDs are the `gizmo.id` values from the project sidebar response. Existing project conversation records usually already include `gizmo_id`; skip those by default.
 
+## Write Preconditions
+
+- Execute reads exact conversation and target IDs from a fingerprinted preview report; it does not regenerate classification rules.
+- Before a batch write, verify the current title hash, current `gizmo_id`, target Project ID, and target Project name.
+- Abort the whole execute batch when any saved item changed after preview.
+- For rollback, apply only items whose current `gizmo_id` still equals the execute target. Skip later user changes.
+- Keep the execute report because its fingerprinted rollback manifest is required for safe restoration.
+
 ## Known Failure Modes
 
 - `401 Unauthorized - Access token is missing`: the page is not logged in or the token was not fetched inside page context.
@@ -49,3 +59,4 @@ Project IDs are the `gizmo.id` values from the project sidebar response. Existin
 - `--page-id` should resolve targets through `/json/list` first and use the returned `webSocketDebuggerUrl`. Only fall back to constructing a page WebSocket URL from the user-provided `--cdp` host when the target is not listed.
 - ChatGPT may rate limit rapid conversation reads/writes. Use a delay between `PATCH` requests.
 - If a private API fails during preview or execute, stop and run a fresh preview. Do not blindly retry write operations.
+- Chrome stores login state in its `--user-data-dir` even though the script never reads or exports that data. Prefer a disposable profile and remove it only after Chrome closes.

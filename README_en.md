@@ -2,85 +2,148 @@
 
 # GPT Sorter
 
-A reusable Codex Skill for sorting ChatGPT web conversations into existing ChatGPT Projects.
+[![CI](https://github.com/hankchn/gpt-sorter/actions/workflows/ci.yml/badge.svg)](https://github.com/hankchn/gpt-sorter/actions/workflows/ci.yml)
 
-The core principle is simple: move only conversations that are confidently classified. The script reads the current logged-in ChatGPT web session, lists existing Projects and conversation titles, builds a preview plan, and performs moves only after explicit confirmation.
+A Codex Skill and Node.js CLI that safely organizes ChatGPT history into existing Projects.
 
-## What It Does
+Its goal is not to move as many conversations as possible. It moves only conversations that were reviewed in a saved preview and whose state is unchanged:
 
-- Uses the currently logged-in ChatGPT web session without requiring a data export.
-- Lists existing ChatGPT Projects and recent or all visible conversations.
-- Builds a move plan from title rules and exact title mappings.
-- Prints a human-readable summary by default, with `--json` for full JSON output.
-- Writes preview and execute reports with `--out <file>`.
-- Moves only into existing projects and never creates project folders by default.
-- Does not read conversation bodies, browser cookies, local storage, or persist access tokens by default.
+1. Read Project names and conversation titles from a logged-in ChatGPT page.
+2. Generate a preview plan with a SHA-256 fingerprint.
+3. Execute only that saved plan after re-checking each title, source Project, and target Project.
+4. Roll back only conversations that are still in the Project recorded by the execute report.
 
-## Quick Start
+## Output Structure Example
 
-1. Open Chrome with a debugging port and log in to ChatGPT:
-
-```bash
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9777 --user-data-dir=/tmp/gpt-sorter
-```
-
-2. Open `https://chatgpt.com` in that Chrome profile and confirm you are logged in.
-
-3. Start with 20 conversations so you can check the rule direction:
-
-```bash
-node gpt-sorter/scripts/gpt_sorter.mjs preview --scan 20
-```
-
-4. To customize rules, copy and edit the example inside the installable Skill directory:
-
-```bash
-cp gpt-sorter/examples/rules.example.json work/chatgpt-rules.json
-node gpt-sorter/scripts/gpt_sorter.mjs preview --scan 20 --rules work/chatgpt-rules.json
-```
-
-5. Expand the scope and save a preview report:
-
-```bash
-node gpt-sorter/scripts/gpt_sorter.mjs preview --scan all --rules work/chatgpt-rules.json --out work/gpt-sorter-preview.json
-```
-
-6. Execute only after checking `plannedCount`. `--confirm-count` must exactly match the generated plan:
-
-```bash
-node gpt-sorter/scripts/gpt_sorter.mjs execute --scan all --rules work/chatgpt-rules.json --confirm-count 12 --out work/gpt-sorter-execute.json
-```
-
-## Use As A Skill
-
-Place `gpt-sorter/` in your Codex skills directory, then trigger it with:
+The numbers below only illustrate the preview format; they are not measured product results.
 
 ```text
-Use $gpt-sorter to preview and batch move my ChatGPT conversations into existing projects.
+Mode: preview
+Scanned: 20
+Projects: 6
+Planned: 8
+Skipped: 12
+
+Planned by project:
+- AI Product: 5
+- Writing: 3
+
+Plan fingerprint: 4f7b...a921
+Report written: /path/to/work/preview.json
 ```
 
-When only the `gpt-sorter/` directory is installed, the example rules are still available inside the Skill:
+If a planned conversation is renamed or moved after preview, or its target Project is deleted or renamed, execute stops the whole batch and asks for a fresh preview.
+
+## Good Fit
+
+Use GPT Sorter when you already have ChatGPT Projects and want a preview-first, auditable way to organize existing conversations. It is not intended to create/delete Projects, bypass review, or provide a stable public ChatGPT API integration.
+
+## Install
+
+### Standalone CLI
 
 ```bash
-node scripts/gpt_sorter.mjs preview --scan 20 --rules examples/rules.example.json
+git clone https://github.com/hankchn/gpt-sorter.git
+cd gpt-sorter
+node gpt-sorter/scripts/gpt_sorter.mjs --help
 ```
 
-The Skill flow:
+There are no runtime packages to install.
 
-1. Confirm the scope. Start with `--scan 20`, then expand to `--scan all` after review.
-2. Generate or adjust classification rules from existing projects and titles.
-3. Show a preview summary and skipped reasons.
-4. Wait for the user to check `plannedCount`, then execute with `--confirm-count <N>` or `--confirm-plan`.
-5. Save an execute report and run preview again to verify remaining items.
+### Codex Skill
 
-## Rule Example
+From the repository root:
+
+```bash
+mkdir -p ~/.codex/skills
+ln -s "$PWD/gpt-sorter" ~/.codex/skills/gpt-sorter
+```
+
+Then ask Codex:
+
+```text
+Use $gpt-sorter to preview my ChatGPT conversations and safely move the confirmed plan into existing projects.
+```
+
+## 60-Second Start
+
+### 1. Start a dedicated Chrome session
+
+Use a disposable profile instead of your normal Chrome data directory:
+
+```bash
+PROFILE_DIR="$(mktemp -d /tmp/gpt-sorter.XXXXXX)"
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --remote-debugging-port=9777 \
+  --user-data-dir="$PROFILE_DIR"
+```
+
+Open `https://chatgpt.com` and log in. Chrome itself stores cookies and local state in `PROFILE_DIR`; the script does not read or print them. After closing that Chrome session, remove the disposable profile:
+
+```bash
+rm -rf "$PROFILE_DIR"
+```
+
+### 2. Generate a conservative rule draft
+
+```bash
+node gpt-sorter/scripts/gpt_sorter.mjs suggest-rules \
+  --scan 50 \
+  --out work/rules.json
+```
+
+The draft uses current Project names and reports planned, skipped, ambiguous, and unmatched coverage. It does not persist title samples unless `--include-title-samples` is explicitly supplied.
+
+Preview can also run without `--rules`. In that case GPT Sorter creates conservative matches from the actual Project names instead of assuming fixed default Projects.
+
+### 3. Save a preview
+
+```bash
+node gpt-sorter/scripts/gpt_sorter.mjs preview \
+  --scan all \
+  --rules work/rules.json \
+  --out work/preview.json \
+  --redact-titles
+```
+
+`--redact-titles` keeps titles visible in the terminal for review but removes them from the saved file. Title hashes remain so execute can detect renamed conversations.
+
+### 4. Execute the exact saved plan
+
+Copy the complete fingerprint printed by preview:
+
+```bash
+node gpt-sorter/scripts/gpt_sorter.mjs execute \
+  --plan work/preview.json \
+  --confirm-plan <preview-fingerprint> \
+  --out work/execute.json \
+  --redact-titles
+```
+
+Execute requires both a saved preview and an output path for its audit/rollback report. `--confirm-count <N>` remains available for compatibility, but fingerprint confirmation is recommended.
+
+Execute creates a checkpoint before the first write and updates it after every conversation. A failed or uncertain write stops the remaining batch, while already completed moves remain recoverable from the checkpoint.
+
+### 5. Roll back safely when needed
+
+The execute report contains a separate rollback fingerprint:
+
+```bash
+node gpt-sorter/scripts/gpt_sorter.mjs rollback \
+  --plan work/execute.json \
+  --confirm-plan <rollback-fingerprint> \
+  --out work/rollback.json
+```
+
+Rollback skips any conversation that was moved again after execute and returns a non-zero exit code for incomplete restoration.
+
+## Rule File
 
 ```json
 {
   "rules": [
     { "project": "Work", "match": ["meeting", "roadmap", "requirement", "retro"] },
-    { "project": "Learning", "match": ["course", "notes", "tutorial", "concept"] },
-    { "project": "Writing", "match": ["draft", "outline", "headline", "rewrite"] }
+    { "project": "Learning", "match": ["course", "notes", "tutorial", "concept"] }
   ],
   "exact": {
     "Quarterly planning discussion": "Work"
@@ -88,79 +151,42 @@ The Skill flow:
 }
 ```
 
-`match` entries are case-insensitive regular-expression fragments. `exact` title mappings have the highest priority and can override semantic-empty title protection because they represent explicit user confirmation.
-
-## Safe Classification Rules
-
-- `exact` title mappings have the highest priority.
-- Non-exact classification collects every matching rule.
-- 0 matches: skipped as `no-confident-project`.
-- 1 match: added to planned.
-- Multiple matches: skipped as `ambiguous-multiple-rules` with candidate projects.
-- `New chat`, empty titles, `Untitled`, and very short titles are skipped as `semantic-empty-title` by default.
-- Broad regex patterns such as `.*` will not move `New chat`.
-
-## Rule File Validation
-
-preview and execute validate rule files locally before touching the browser:
-
-- `rules` must be an array.
-- Each rule must have a non-empty `project`.
-- `match` must be an array of strings.
-- `exact` must be a `{ "title": "project" }` object.
-- Regex compilation failures are returned as `configErrors`; preview stops and execute refuses to run.
-
-## CLI Options
-
-```bash
-node gpt-sorter/scripts/gpt_sorter.mjs --help
-```
-
-Common options:
-
-- `--cdp <url>`: Chrome DevTools endpoint, default `http://127.0.0.1:9777`.
-- `--page-id <id>`: use a specific page target from `/json/list`.
-- `--scan all` or `--scan 100`: scan all visible history or the first N conversations.
-- `--rules <file>`: rule file.
-- `--out <file>`: write a JSON report.
-- `--json`: print full JSON to the terminal.
-- `--max-preview-items <N>`: control human-summary sample size.
-- `--include-archived`, `--include-starred`, `--include-in-project`: expand the scan scope.
-
-The default safe scope processes only ordinary history conversations that are not archived, not starred, and not already in a project.
-
-## Helper Commands
-
-Generate a draft rule file without moving anything:
-
-```bash
-node gpt-sorter/scripts/gpt_sorter.mjs suggest-rules --scan 50 --out work/suggested-rules.json
-```
-
-If an execute report contains successful moves, roll them back to their previous `gizmo_id`:
-
-```bash
-node gpt-sorter/scripts/gpt_sorter.mjs rollback --plan work/gpt-sorter-execute.json --confirm-count 12
-```
-
-## Private API Notes
-
-This Skill uses internal ChatGPT web endpoints for project listing, conversation listing, and project assignment. These APIs are unstable and may change. If a private API fails, stop and run preview again; do not blindly retry destructive operations. See `gpt-sorter/references/private_api.md`.
+- Exact title mappings have the highest priority.
+- Match entries are case-insensitive regular-expression fragments.
+- Matches across different Projects are skipped as `ambiguous-multiple-rules`.
+- Duplicate Project names are skipped as `project-name-ambiguous` instead of resolving to an arbitrary ID.
+- Blank patterns and patterns such as `.*` that match an empty title are rejected.
+- `New chat`, `Untitled`, empty titles, and very short titles are skipped by default.
 
 ## Safety And Privacy
 
-- Does not read or save browser cookies.
-- Does not return access tokens to the Node process or logs.
-- Classifies from titles by default and does not read conversation bodies.
-- execute requires `--confirm-count <N>` or `--confirm-plan`.
-- execute reports include conversation id, title, previous project, target project, status, and error for audit and rollback.
-- Moves only into existing projects and does not create or delete projects.
+- The script does not read, return, or persist cookies, local storage, or access tokens.
+- Chrome does persist login data in `--user-data-dir`; use a disposable directory and remove it after closing Chrome.
+- The default flow reads conversation-list metadata and titles, not conversation bodies.
+- Preview and execute reports normally include conversation IDs and titles; use `--redact-titles` to avoid persisting titles.
+- `suggest-rules` does not persist title samples by default.
+- Private API failures stop the flow instead of triggering blind write retries.
+
+## Development
+
+```bash
+npm test
+npm run test:coverage
+npm run smoke
+npm run check
+```
+
+GitHub Actions runs the checks on Node.js 22 and 24. Because the ChatGPT endpoints are private, release validation should still include a preview-only integration check with a logged-in test account.
 
 ## Requirements
 
 - Node.js 22 or newer.
-- A logged-in ChatGPT browser page.
-- A Chrome DevTools Protocol endpoint, default `http://127.0.0.1:9777`.
+- Chrome or another Chromium browser with Chrome DevTools Protocol support.
+- A logged-in `chatgpt.com` page reachable through the debug endpoint.
+
+## Limitations
+
+GPT Sorter uses internal ChatGPT web endpoints. They have no stability guarantee and may require future updates. See `gpt-sorter/references/private_api.md`.
 
 ## License
 
@@ -168,4 +194,7 @@ MIT
 
 ## Contributors
 
-Created by hankchn with OpenAI Codex.
+| Contributor | Contribution |
+| --- | --- |
+| Hank Yang | Product direction and maintenance |
+| OpenAI Codex | Implementation, safety hardening, tests, and documentation assistance |

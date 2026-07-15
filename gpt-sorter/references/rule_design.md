@@ -10,7 +10,10 @@
 - Treat `New chat`, very short unclear titles, and multi-topic titles as skipped unless the user confirms.
 - Exact title mappings have the highest priority and can override semantic-empty title protection.
 - Non-exact matches must collect every matching rule. If more than one rule matches, skip as `ambiguous-multiple-rules` and show candidate projects.
-- Do not use "first match wins"; it hides ambiguous rules and can move conversations into the wrong project.
+- Multiple matching rules for the same Project are compatible and should be merged. Matches across different Projects are ambiguous.
+- Do not use "first match wins"; it hides ambiguity and can move conversations into the wrong Project.
+- Treat duplicate Project names as unresolved. Require unique names or a future explicit Project-ID rule instead of silently choosing one.
+- Reject blank patterns and regular expressions such as `.*` that match an empty string.
 
 ## Recommended Rule Categories
 
@@ -45,5 +48,5 @@ Show a compact preview:
 - Foo Bar：没有对应项目
 ```
 
-Then wait for a clear confirmation such as `确认` or `执行`.
-For CLI execution, convert that confirmation into `--confirm-count <plannedCount>` or `--confirm-plan`.
+Then show the complete `planFingerprint` and wait for a clear confirmation such as `确认` or `执行`.
+For CLI execution, use the saved preview file with `--plan <preview.json>` and convert confirmation into `--confirm-plan <planFingerprint>`. Keep `--confirm-count <plannedCount>` only for compatibility.

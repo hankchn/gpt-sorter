@@ -1,23 +1,30 @@
 {
   "ok": true,
   "mode": "preview",
-  "scanned": 100,
-  "projectCount": 8,
+  "generatedAt": "2026-07-16T00:00:00.000Z",
+  "scan": "20",
+  "ruleSource": "file",
+  "configWarnings": [],
+  "filters": {
+    "includeArchived": false,
+    "includeStarred": false,
+    "includeInProject": false
+  },
+  "scanned": 5,
+  "projectCount": 4,
   "projectPagination": {
     "limit": 50,
-    "fetched": 8,
+    "fetched": 4,
     "cursorSupported": false,
     "paginationSupported": true,
     "truncated": false,
     "warnings": []
   },
-  "plannedCount": 12,
-  "skippedCount": 88,
+  "plannedCount": 2,
+  "skippedCount": 3,
   "byProject": {
-    "工作": 3,
-    "学习": 2,
-    "写作": 4,
-    "事务": 3
+    "工作": 1,
+    "写作": 1
   },
   "skippedByReason": {
     "semantic-empty-title": 1,
@@ -25,12 +32,38 @@
     "ambiguous-multiple-rules": 1
   },
   "planned": [
-    { "id": "conversation-1", "title": "季度规划讨论", "previousGizmoId": null, "project": "工作", "projectId": "g-p-work", "status": "planned" },
-    { "id": "conversation-2", "title": "写作大纲优化", "previousGizmoId": null, "project": "写作", "projectId": "g-p-writing", "status": "planned" }
+    {
+      "id": "conversation-1",
+      "title": "季度规划讨论",
+      "previousGizmoId": null,
+      "project": "工作",
+      "projectId": "g-p-work",
+      "status": "planned"
+    },
+    {
+      "id": "conversation-2",
+      "title": "写作大纲优化",
+      "previousGizmoId": null,
+      "project": "写作",
+      "projectId": "g-p-writing",
+      "status": "planned"
+    }
   ],
   "skipped": [
-    { "id": "conversation-3", "title": "New chat", "previousGizmoId": null, "status": "skipped", "reason": "semantic-empty-title" },
-    { "id": "conversation-4", "title": "已在项目里的对话", "previousGizmoId": "g-p-existing", "status": "skipped", "reason": "already-in-project" },
+    {
+      "id": "conversation-3",
+      "title": "New chat",
+      "previousGizmoId": null,
+      "status": "skipped",
+      "reason": "semantic-empty-title"
+    },
+    {
+      "id": "conversation-4",
+      "title": "已在项目里的对话",
+      "previousGizmoId": "g-p-existing",
+      "status": "skipped",
+      "reason": "already-in-project"
+    },
     {
       "id": "conversation-5",
       "title": "路线图调研",
@@ -39,5 +72,33 @@
       "reason": "ambiguous-multiple-rules",
       "candidateProjects": ["工作", "研究"]
     }
-  ]
+  ],
+  "planManifest": {
+    "schemaVersion": 1,
+    "kind": "gpt-sorter-preview",
+    "scan": "20",
+    "filters": {
+      "includeArchived": false,
+      "includeStarred": false,
+      "includeInProject": false
+    },
+    "plannedCount": 2,
+    "items": [
+      {
+        "id": "conversation-1",
+        "previousGizmoId": null,
+        "targetGizmoId": "g-p-work",
+        "project": "工作",
+        "titleHash": "148e93520fa8844dccf93b91ae14f7bf210bbe8991f185945a7c44b9a6615d28"
+      },
+      {
+        "id": "conversation-2",
+        "previousGizmoId": null,
+        "targetGizmoId": "g-p-writing",
+        "project": "写作",
+        "titleHash": "ecd95192f2012bb3a783907ade9cfd16d259d47eee02c3ca4fcb575845b32161"
+      }
+    ]
+  },
+  "planFingerprint": "48b84e74577ba15ab921ad4992bc18427583e100345e6133ef6443a59e16cb3b"
 }

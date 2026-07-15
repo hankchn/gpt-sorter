@@ -2,85 +2,158 @@
 
 # GPT Sorter
 
-一个可复用的 Codex Skill，用来把 ChatGPT 网页端的历史对话批量整理到已有项目中。
+[![CI](https://github.com/hankchn/gpt-sorter/actions/workflows/ci.yml/badge.svg)](https://github.com/hankchn/gpt-sorter/actions/workflows/ci.yml)
 
-它的核心原则是：只移动有把握的对话。脚本会先读取当前登录的 ChatGPT 网页会话，拉取已有 Projects 和标题列表，生成预览计划；只有在用户显式确认后，才把计划中的对话移动到已有项目。
+一个把 ChatGPT 历史对话批量整理到已有 Projects 的 Codex Skill 和 Node.js CLI。
 
-## 能做什么
+它的核心不是“尽可能多移动”，而是“只移动预览过且状态没变的对话”：
 
-- 读取当前登录的 ChatGPT 网页会话，不要求用户导出数据。
-- 拉取已有 ChatGPT Projects 和最近或全部可见历史对话。
-- 根据标题规则和精确标题映射生成移动计划。
-- 默认输出人类可读摘要，也可以用 `--json` 输出完整 JSON。
-- 支持 `--out <file>` 保存 preview / execute 报告。
-- 只移动到已有项目，不自动创建项目文件夹。
-- 默认不读取对话正文，不保存 cookies、本地存储或访问令牌。
+1. 读取已登录 ChatGPT 页面中的 Project 和对话标题。
+2. 生成 preview 计划和 SHA-256 指纹。
+3. execute 只使用已保存的 preview，并在写入前再次校验标题、原 Project 和目标 Project。
+4. rollback 只恢复仍处于上次执行目标 Project 的对话，不覆盖用户后续的手动调整。
 
-## 快速开始
+## 输出结构示例
 
-1. 打开一个带调试端口的 Chrome，并登录 ChatGPT：
-
-```bash
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9777 --user-data-dir=/tmp/gpt-sorter
-```
-
-2. 在 Chrome 中打开 `https://chatgpt.com` 并确认已经登录。
-
-3. 首次建议只扫描 20 条，确认规则方向：
-
-```bash
-node gpt-sorter/scripts/gpt_sorter.mjs preview --scan 20
-```
-
-4. 如需自定义规则，复制并修改 Skill 目录内的示例：
-
-```bash
-cp gpt-sorter/examples/rules.example.json work/chatgpt-rules.json
-node gpt-sorter/scripts/gpt_sorter.mjs preview --scan 20 --rules work/chatgpt-rules.json
-```
-
-5. 扩大范围并保存预览报告：
-
-```bash
-node gpt-sorter/scripts/gpt_sorter.mjs preview --scan all --rules work/chatgpt-rules.json --out work/gpt-sorter-preview.json
-```
-
-6. 用户核对 `plannedCount` 后再执行。`--confirm-count` 必须与本次计划数量完全一致：
-
-```bash
-node gpt-sorter/scripts/gpt_sorter.mjs execute --scan all --rules work/chatgpt-rules.json --confirm-count 12 --out work/gpt-sorter-execute.json
-```
-
-## 作为 Skill 使用
-
-把 `gpt-sorter/` 放入 Codex 的 skills 目录后，可以这样触发：
+以下数字仅用于展示 preview 的输出结构，不代表实测数据：
 
 ```text
-Use $gpt-sorter to preview and batch move my ChatGPT conversations into existing projects.
+Mode: preview
+Scanned: 20
+Projects: 6
+Planned: 8
+Skipped: 12
+
+Planned by project:
+- AI 产品: 5
+- 写作: 3
+
+Plan fingerprint: 4f7b...a921
+Report written: /path/to/work/preview.json
 ```
 
-只安装 `gpt-sorter/` 目录时，示例规则仍然在 Skill 内：
+如果 preview 后某条对话被改名、移入其他 Project，或目标 Project 被删除/改名，execute 会停止整批操作并要求重新 preview。
+
+## 适用范围
+
+适合：
+
+- 已经在 ChatGPT 中建好 Projects，想整理历史对话。
+- 希望先预览、再批量执行，并保留审计与回滚文件。
+- 愿意使用标题规则进行保守分类。
+
+不适合：
+
+- 需要自动创建、删除或重命名 Projects。
+- 希望不经预览就全自动移动所有对话。
+- 不能接受 ChatGPT 网页私有接口可能变化的工作流。
+
+## 安装
+
+### 作为独立 CLI
 
 ```bash
-node scripts/gpt_sorter.mjs preview --scan 20 --rules examples/rules.example.json
+git clone https://github.com/hankchn/gpt-sorter.git
+cd gpt-sorter
+node gpt-sorter/scripts/gpt_sorter.mjs --help
 ```
 
-Skill 会按以下顺序工作：
+项目没有运行时依赖，不需要 `npm install`。
 
-1. 确认整理范围：建议先 `--scan 20`，确认后再扩大到 `--scan all`。
-2. 根据已有项目和标题生成或调整分类规则。
-3. 先输出预览摘要和跳过原因。
-4. 等待用户核对 `plannedCount`，再带 `--confirm-count <N>` 或 `--confirm-plan` 执行。
-5. 执行后保存报告，并再次 preview 验证剩余条目。
+### 安装为 Codex Skill
 
-## 规则示例
+在仓库根目录执行：
+
+```bash
+mkdir -p ~/.codex/skills
+ln -s "$PWD/gpt-sorter" ~/.codex/skills/gpt-sorter
+```
+
+然后可以向 Codex 说：
+
+```text
+Use $gpt-sorter to preview my ChatGPT conversations and safely move the confirmed plan into existing projects.
+```
+
+## 60 秒开始
+
+### 1. 启动独立 Chrome 会话
+
+建议使用一次性 profile，不要复用日常 Chrome 数据目录：
+
+```bash
+PROFILE_DIR="$(mktemp -d /tmp/gpt-sorter.XXXXXX)"
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --remote-debugging-port=9777 \
+  --user-data-dir="$PROFILE_DIR"
+```
+
+在这个 Chrome 中打开 `https://chatgpt.com` 并登录。Chrome 会把该会话的 cookie 和本地存储写入 `PROFILE_DIR`；脚本不会读取或输出它们。关闭该 Chrome 后可删除临时 profile：
+
+```bash
+rm -rf "$PROFILE_DIR"
+```
+
+### 2. 生成规则草案
+
+```bash
+node gpt-sorter/scripts/gpt_sorter.mjs suggest-rules \
+  --scan 50 \
+  --out work/rules.json
+```
+
+草案会使用当前 Project 名称生成保守关键词，并输出覆盖率、未匹配数和歧义数。默认不把对话标题样例写入文件；只有用户同意时才使用 `--include-title-samples`。
+
+也可以直接运行不带 `--rules` 的 preview。此时只使用实际 Project 名称作为保守规则，不再假设用户拥有“工作/学习/写作”等固定 Projects。
+
+### 3. 保存 preview
+
+```bash
+node gpt-sorter/scripts/gpt_sorter.mjs preview \
+  --scan all \
+  --rules work/rules.json \
+  --out work/preview.json \
+  --redact-titles
+```
+
+`--redact-titles` 会在终端中显示标题供用户审查，但不把标题写入报告文件。报告仍保留标题哈希，用于在 execute 前发现标题变化。
+
+### 4. 执行确认过的计划
+
+将 preview 输出的完整指纹填入 `--confirm-plan`：
+
+```bash
+node gpt-sorter/scripts/gpt_sorter.mjs execute \
+  --plan work/preview.json \
+  --confirm-plan <preview-fingerprint> \
+  --out work/execute.json \
+  --redact-titles
+```
+
+`execute` 必须同时提供已保存的 preview 和 execute 报告输出路径。`--confirm-count <N>` 仍可用于兼容原工作流，但推荐使用指纹确认。
+
+execute 会在第一次写入前创建检查点，每处理一条对话就更新报告。如果某条写入失败或结果不确定，后续对话不再继续执行，已成功部分仍可根据检查点回滚。
+
+### 5. 需要时安全回滚
+
+execute 报告会输出独立的 rollback 指纹：
+
+```bash
+node gpt-sorter/scripts/gpt_sorter.mjs rollback \
+  --plan work/execute.json \
+  --confirm-plan <rollback-fingerprint> \
+  --out work/rollback.json
+```
+
+如果某条对话在 execute 之后已被人工移到其他 Project，rollback 会跳过它并返回非零退出码。
+
+## 规则文件
 
 ```json
 {
   "rules": [
     { "project": "工作", "match": ["会议", "路线图", "需求", "复盘"] },
-    { "project": "学习", "match": ["课程", "笔记", "教程", "概念"] },
-    { "project": "写作", "match": ["草稿", "大纲", "标题", "改写"] }
+    { "project": "学习", "match": ["课程", "笔记", "教程", "概念"] }
   ],
   "exact": {
     "季度规划讨论": "工作"
@@ -88,79 +161,42 @@ Skill 会按以下顺序工作：
 }
 ```
 
-`match` 使用大小写不敏感的正则片段；`exact` 精确标题映射优先级最高，并且可以覆盖空标题保护，因为它代表用户显式确认。
-
-## 安全分类规则
-
-- `exact` 标题映射最高优先级。
-- 非 `exact` 情况下会收集所有命中的规则。
-- 0 个命中：跳过为 `no-confident-project`。
-- 1 个命中：进入 planned。
-- 多个命中：跳过为 `ambiguous-multiple-rules`，并输出候选项目。
-- `New chat`、空标题、`Untitled`、极短标题默认跳过为 `semantic-empty-title`。
-- 宽泛正则如 `.*` 不会移动 `New chat`。
-
-## 规则文件校验
-
-preview / execute 会先在本地校验规则文件：
-
-- `rules` 必须是数组。
-- 每个 rule 必须有非空 `project`。
-- `match` 必须是字符串数组。
-- `exact` 必须是 `{ "title": "project" }` 对象。
-- 正则编译失败会输出 `configErrors`，preview 停止，execute 拒绝执行。
-
-## CLI 选项
-
-```bash
-node gpt-sorter/scripts/gpt_sorter.mjs --help
-```
-
-常用选项：
-
-- `--cdp <url>`：Chrome DevTools endpoint，默认 `http://127.0.0.1:9777`。
-- `--page-id <id>`：从 `/json/list` 使用指定页面 target。
-- `--scan all` 或 `--scan 100`：扫描全部可见历史或前 N 条。
-- `--rules <file>`：规则文件。
-- `--out <file>`：保存 JSON 报告。
-- `--json`：在终端输出完整 JSON。
-- `--max-preview-items <N>`：控制人类摘要展示样例数量。
-- `--include-archived`、`--include-starred`、`--include-in-project`：扩大扫描范围。
-
-默认安全策略只处理未归档、未收藏、未进入项目的普通历史对话。
-
-## 辅助命令
-
-生成规则草稿，不会移动任何对话：
-
-```bash
-node gpt-sorter/scripts/gpt_sorter.mjs suggest-rules --scan 50 --out work/suggested-rules.json
-```
-
-如果 execute 报告里有成功移动记录，可以用报告回滚到原 `gizmo_id`：
-
-```bash
-node gpt-sorter/scripts/gpt_sorter.mjs rollback --plan work/gpt-sorter-execute.json --confirm-count 12
-```
-
-## 私有接口说明
-
-这个 Skill 使用 ChatGPT 网页端内部接口，包括项目列表、对话列表和对话项目更新接口。接口不稳定，未来可能变化。失败时应停止、重新 preview，不要盲目重试 destructive operation。相关记录见 `gpt-sorter/references/private_api.md`。
+- `exact` 精确标题映射优先级最高。
+- `match` 是大小写不敏感的正则片段。
+- 同时匹配多个不同 Projects 时跳过为 `ambiguous-multiple-rules`。
+- 同名 Projects 不会被静默选中，而是跳过为 `project-name-ambiguous`。
+- 空字符串和 `.*` 这类可匹配空标题的正则会被拒绝。
+- `New chat`、`Untitled`、空标题和过短标题默认跳过。
 
 ## 安全与隐私
 
-- 不读取或保存浏览器 cookies。
-- 不把访问令牌返回到 Node 进程或日志。
-- 默认只基于标题分类，不读取对话正文。
-- execute 必须带 `--confirm-count <N>` 或 `--confirm-plan`。
-- execute 报告包含对话 id、标题、原项目、目标项目、状态和错误，便于审计和回滚。
-- 只移动到已有项目，不创建或删除项目。
+- 脚本不读取、输出或保存 cookie、local storage 或 access token。
+- Chrome 本身会将登录数据写入 `--user-data-dir`，因此建议使用一次性目录并在关闭 Chrome 后清理。
+- 默认只读取对话列表元数据和标题，不读取对话正文。
+- preview / execute 报告默认包含对话 ID 和标题；使用 `--redact-titles` 可不持久化标题。
+- `suggest-rules` 默认不持久化标题样例。
+- 私有接口失败时停止，不盲目重试写操作。
+
+## 开发与验证
+
+```bash
+npm test
+npm run test:coverage
+npm run smoke
+npm run check
+```
+
+GitHub Actions 会在 Node.js 22 和 24 上运行测试。真实 ChatGPT 接口是私有接口，发布前仍需要使用已登录的测试账号做一次 preview 集成检查。
 
 ## 技术要求
 
 - Node.js 22 或更新版本。
-- 一个已登录 ChatGPT 的 Chrome 页面。
-- Chrome DevTools Protocol 端口，默认 `http://127.0.0.1:9777`。
+- Chrome 或兼容 Chrome DevTools Protocol 的 Chromium 浏览器。
+- 一个已登录 `chatgpt.com` 的调试页面。
+
+## 限制
+
+GPT Sorter 使用 ChatGPT 网页端内部接口。这些接口没有稳定性承诺，未来可能需要更新。参见 `gpt-sorter/references/private_api.md`。
 
 ## License
 
@@ -168,4 +204,7 @@ MIT
 
 ## Contributors
 
-Created by hankchn with OpenAI Codex.
+| Contributor | Contribution |
+| --- | --- |
+| Hank Yang | Product direction and maintenance |
+| OpenAI Codex | Implementation, safety hardening, tests, and documentation assistance |
